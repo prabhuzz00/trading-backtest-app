@@ -1,0 +1,6 @@
+mongo:
+  uri: "mongodb://localhost:27017"
+  database: "trading_db"
+app:
+  initial_cash: 100000
+  strategies_dir: "strategies"
