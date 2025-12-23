@@ -8,6 +8,7 @@ from ui.backtest_results import ResultsWidget
 from ui.charts import ChartWidget
 from ui.summary_widget import SummaryWidget
 from ui.lightweight_ohlc_chart import LightweightOHLCChart
+from ui.live_chart_widget import LiveChartWidget
 from ui.stock_sidebar import StockSidebar
 from ui.top_toolbar import TopToolbar
 from ui.styles import DARK_THEME
@@ -147,11 +148,13 @@ class MainWindow(QMainWindow):
         
         # Create tabs with chart as primary view
         self.ohlc_chart_widget = LightweightOHLCChart()
+        self.live_chart_widget = LiveChartWidget()
         self.chart_widget = ChartWidget()
         self.summary_widget = SummaryWidget()
         self.results_widget = ResultsWidget()
         
-        self.tabs.addTab(self.ohlc_chart_widget, "📊 Chart")
+        self.tabs.addTab(self.live_chart_widget, "📉 Live Chart")
+        self.tabs.addTab(self.ohlc_chart_widget, "📊 Backtest Chart")
         self.tabs.addTab(self.chart_widget, "📈 Equity Curve")
         self.tabs.addTab(self.summary_widget, "📋 Summary")
         self.tabs.addTab(self.results_widget, "💼 Trades")
@@ -209,6 +212,7 @@ class MainWindow(QMainWindow):
     def on_stock_selected(self, symbol):
         """Handle stock selection from sidebar"""
         self.toolbar.set_symbol(symbol)
+        self.live_chart_widget.set_symbol(symbol)
         self.status_label.setText(f"Selected: {symbol}")
 
     def add_strategy_file(self):
@@ -278,8 +282,8 @@ class MainWindow(QMainWindow):
         # Display summary first (fastest)
         self.summary_widget.display_summary(results)
         
-        # Switch to chart tab to show results
-        self.tabs.setCurrentIndex(0)
+        # Switch to backtest chart tab to show results
+        self.tabs.setCurrentIndex(1)  # Backtest Chart tab
         QApplication.processEvents()
         
         # Lazy load other widgets using QTimer to avoid blocking UI
