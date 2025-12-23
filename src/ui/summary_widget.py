@@ -100,7 +100,7 @@ class SummaryWidget(QWidget):
         row += 1
         
         total_pnl = metrics.get('total_pnl', 0)
-        pnl_color = "#26A69A" if total_pnl >= 0 else "#EF5350"
+        pnl_color = "#26A69A" if total_pnl >= 0 else "#EF5350" 
         self.metric_labels['total_pnl'] = self.create_metric_row(
             "Total P&L:", 
             f"₹{total_pnl:,.2f}", 
