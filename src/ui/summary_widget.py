@@ -14,15 +14,17 @@ class SummaryWidget(QWidget):
         scroll_area.setWidgetResizable(True)
         scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll_area.setStyleSheet("background-color: #131722; border: none;")
         
         # Content widget inside scroll area
         content_widget = QWidget()
+        content_widget.setStyleSheet("background-color: #131722;")
         layout = QVBoxLayout(content_widget)
-        layout.setContentsMargins(15, 15, 15, 15)
+        layout.setContentsMargins(20, 20, 20, 20)
         
         # Title
         title = QLabel("Backtest Summary")
-        title.setStyleSheet("font-size: 18px; font-weight: bold; padding: 10px; color: #FFFFFF;")
+        title.setStyleSheet("font-size: 20px; font-weight: bold; padding: 10px; color: #D1D4DC;")
         title.setWordWrap(True)
         layout.addWidget(title)
         
@@ -42,15 +44,15 @@ class SummaryWidget(QWidget):
         scroll_area.setWidget(content_widget)
         main_layout.addWidget(scroll_area)
     
-    def create_metric_row(self, label_text, value_text, row):
+    def create_metric_row(self, label_text, value_text, row, value_color="#D1D4DC"):
         """Create a row with label and value."""
         label = QLabel(label_text)
-        label.setStyleSheet("font-weight: bold; font-size: 12px; color: #FFFFFF; padding: 5px;")
+        label.setStyleSheet("font-weight: 600; font-size: 13px; color: #787B86; padding: 5px;")
         label.setWordWrap(True)
         label.setMinimumWidth(150)
         
         value = QLabel(value_text)
-        value.setStyleSheet("font-size: 12px; color: #ADD8E6; padding: 5px;")
+        value.setStyleSheet(f"font-size: 14px; color: {value_color}; padding: 5px; font-weight: 500;")
         value.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         value.setWordWrap(True)
         value.setMinimumWidth(100)
@@ -72,7 +74,7 @@ class SummaryWidget(QWidget):
         
         if not metrics:
             no_data = QLabel("Run a backtest to see summary metrics")
-            no_data.setStyleSheet("font-style: italic; color: gray; padding: 20px;")
+            no_data.setStyleSheet("font-style: italic; color: #787B86; padding: 20px;")
             no_data.setWordWrap(True)
             no_data.setAlignment(Qt.AlignmentFlag.AlignCenter)
             self.grid.addWidget(no_data, 0, 0, 1, 2, Qt.AlignmentFlag.AlignCenter)
@@ -82,21 +84,34 @@ class SummaryWidget(QWidget):
         
         # Performance Metrics
         section_label = QLabel("📊 Performance Metrics")
-        section_label.setStyleSheet("font-size: 14px; font-weight: bold; color: #87CEEB; padding-top: 10px; padding-bottom: 5px;")
+        section_label.setStyleSheet("font-size: 15px; font-weight: bold; color: #D1D4DC; padding-top: 10px; padding-bottom: 5px;")
         section_label.setWordWrap(True)
         self.grid.addWidget(section_label, row, 0, 1, 2)
         row += 1
         
+        total_return = metrics.get('total_return_pct', 0)
+        return_color = "#26A69A" if total_return >= 0 else "#EF5350"
         self.metric_labels['total_return'] = self.create_metric_row(
             "Total Return:", 
-            f"{metrics.get('total_return_pct', 0):.2f}%", 
-            row
+            f"{total_return:.2f}%", 
+            row,
+            return_color
         )
         row += 1
         
+        total_pnl = metrics.get('total_pnl', 0)
+        pnl_color = "#26A69A" if total_pnl >= 0 else "#EF5350"
         self.metric_labels['total_pnl'] = self.create_metric_row(
             "Total P&L:", 
-            f"₹{metrics.get('total_pnl', 0):,.2f}", 
+            f"₹{total_pnl:,.2f}", 
+            row,
+            pnl_color
+        )
+        row += 1
+        
+        self.metric_labels['total_brokerage'] = self.create_metric_row(
+            "Total Brokerage:", 
+            f"₹{metrics.get('total_brokerage', 0):,.2f}", 
             row
         )
         row += 1
@@ -118,13 +133,13 @@ class SummaryWidget(QWidget):
         # Add separator
         separator = QFrame()
         separator.setFrameShape(QFrame.Shape.HLine)
-        separator.setStyleSheet("background-color: #ccc;")
+        separator.setStyleSheet("background-color: #2A2E39;")
         self.grid.addWidget(separator, row, 0, 1, 2)
         row += 1
         
         # Trade Statistics
         section_label = QLabel("📈 Trade Statistics")
-        section_label.setStyleSheet("font-size: 14px; font-weight: bold; color: #87CEEB; padding-top: 10px; padding-bottom: 5px;")
+        section_label.setStyleSheet("font-size: 15px; font-weight: bold; color: #D1D4DC; padding-top: 10px; padding-bottom: 5px;")
         section_label.setWordWrap(True)
         self.grid.addWidget(section_label, row, 0, 1, 2)
         row += 1
@@ -132,6 +147,20 @@ class SummaryWidget(QWidget):
         self.metric_labels['total_trades'] = self.create_metric_row(
             "Total Trades:", 
             str(metrics.get('total_trades', 0)), 
+            row
+        )
+        row += 1
+        
+        self.metric_labels['total_long_trades'] = self.create_metric_row(
+            "Long Trades:", 
+            str(metrics.get('total_long_trades', 0)), 
+            row
+        )
+        row += 1
+        
+        self.metric_labels['total_short_trades'] = self.create_metric_row(
+            "Short Trades:", 
+            str(metrics.get('total_short_trades', 0)), 
             row
         )
         row += 1
@@ -160,13 +189,13 @@ class SummaryWidget(QWidget):
         # Add separator
         separator = QFrame()
         separator.setFrameShape(QFrame.Shape.HLine)
-        separator.setStyleSheet("background-color: #ccc;")
+        separator.setStyleSheet("background-color: #2A2E39;")
         self.grid.addWidget(separator, row, 0, 1, 2)
         row += 1
         
         # Profit/Loss Analysis
         section_label = QLabel("💰 Profit/Loss Analysis")
-        section_label.setStyleSheet("font-size: 14px; font-weight: bold; color: #87CEEB; padding-top: 10px; padding-bottom: 5px;")
+        section_label.setStyleSheet("font-size: 15px; font-weight: bold; color: #D1D4DC; padding-top: 10px; padding-bottom: 5px;")
         section_label.setWordWrap(True)
         self.grid.addWidget(section_label, row, 0, 1, 2)
         row += 1
@@ -223,36 +252,31 @@ class SummaryWidget(QWidget):
         # Add separator
         separator = QFrame()
         separator.setFrameShape(QFrame.Shape.HLine)
-        separator.setStyleSheet("background-color: #ccc;")
+        separator.setStyleSheet("background-color: #2A2E39;")
         self.grid.addWidget(separator, row, 0, 1, 2)
         row += 1
         
         # Risk Metrics
         section_label = QLabel("⚠️ Risk Metrics")
-        section_label.setStyleSheet("font-size: 14px; font-weight: bold; color: #87CEEB; padding-top: 10px; padding-bottom: 5px;")
+        section_label.setStyleSheet("font-size: 15px; font-weight: bold; color: #D1D4DC; padding-top: 10px; padding-bottom: 5px;")
         section_label.setWordWrap(True)
         self.grid.addWidget(section_label, row, 0, 1, 2)
         row += 1
         
+        max_dd_pct = metrics.get('max_drawdown_pct', 0)
+        dd_color = "#EF5350" if max_dd_pct < -10 else "#FFA726" if max_dd_pct < -5 else "#D1D4DC"
         self.metric_labels['max_drawdown'] = self.create_metric_row(
             "Max Drawdown:", 
-            f"{metrics.get('max_drawdown_pct', 0):.2f}%", 
-            row
+            f"{max_dd_pct:.2f}%", 
+            row,
+            dd_color
         )
         row += 1
         
         self.metric_labels['max_drawdown_value'] = self.create_metric_row(
             "Max Drawdown Value:", 
             f"₹{metrics.get('max_drawdown', 0):,.2f}", 
-            row
+            row,
+            dd_color
         )
         row += 1
-        
-        # Color code based on performance
-        total_return = metrics.get('total_return_pct', 0)
-        if total_return > 0:
-            self.metric_labels['total_return'].setStyleSheet("font-size: 12px; color: #00FF00; font-weight: bold;")
-            self.metric_labels['total_pnl'].setStyleSheet("font-size: 12px; color: #00FF00; font-weight: bold;")
-        elif total_return < 0:
-            self.metric_labels['total_return'].setStyleSheet("font-size: 12px; color: #FF6666; font-weight: bold;")
-            self.metric_labels['total_pnl'].setStyleSheet("font-size: 12px; color: #FF6666; font-weight: bold;")

@@ -1,4 +1,5 @@
 PyQt6>=6.6.0
+PyQt6-WebEngine>=6.6.0
 pymongo>=4.6.0
 pandas>=2.1.0
 numpy>=1.26.0
@@ -6,3 +7,4 @@ matplotlib>=3.8.0
 pyqtgraph>=0.13.3
 pyyaml>=6.0
 reportlab>=4.0.0
+numba>=0.58.0
