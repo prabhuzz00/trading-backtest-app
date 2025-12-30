@@ -1,5 +1,5 @@
 mongo:
-  uri: "mongodb://192.168.1.25:27017"
+  uri: "mongodb://localhost:27017"
   database: "mg"
 app:
   initial_cash: 100000

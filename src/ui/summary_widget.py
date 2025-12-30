@@ -62,8 +62,13 @@ class SummaryWidget(QWidget):
         
         return value
     
-    def display_summary(self, results):
-        """Display summary metrics from backtest results."""
+    def display_summary(self, results, symbol=None):
+        """Display summary metrics from backtest results.
+        
+        Args:
+            results: Backtest results dictionary
+            symbol: Stock/instrument symbol (for detecting options trading)
+        """
         # Clear existing widgets
         for i in reversed(range(self.grid.count())): 
             self.grid.itemAt(i).widget().setParent(None)
@@ -80,7 +85,21 @@ class SummaryWidget(QWidget):
             self.grid.addWidget(no_data, 0, 0, 1, 2, Qt.AlignmentFlag.AlignCenter)
             return
         
+        # Detect if this is options trading
+        is_options = symbol and 'NSEFO' in symbol
+        
         row = 0
+        
+        # Trading Type Indicator
+        if is_options:
+            type_label = QLabel("🎯 Options Strategy Backtest")
+            type_label.setStyleSheet("font-size: 16px; font-weight: bold; color: #42A5F5; padding-top: 5px; padding-bottom: 10px;")
+        else:
+            type_label = QLabel("📈 Equity Strategy Backtest")
+            type_label.setStyleSheet("font-size: 16px; font-weight: bold; color: #26A69A; padding-top: 5px; padding-bottom: 10px;")
+        type_label.setWordWrap(True)
+        self.grid.addWidget(type_label, row, 0, 1, 2)
+        row += 1
         
         # Performance Metrics
         section_label = QLabel("📊 Performance Metrics")
@@ -279,4 +298,56 @@ class SummaryWidget(QWidget):
             row,
             dd_color
         )
-        row += 1
+        row += 1        
+        # Options-specific metrics (if applicable)
+        if is_options:
+            # Add separator
+            separator = QFrame()
+            separator.setFrameShape(QFrame.Shape.HLine)
+            separator.setStyleSheet("background-color: #2A2E39;")
+            self.grid.addWidget(separator, row, 0, 1, 2)
+            row += 1
+            
+            section_label = QLabel("📋 Options Strategy Metrics")
+            section_label.setStyleSheet("font-size: 15px; font-weight: bold; color: #42A5F5; padding-top: 10px; padding-bottom: 5px;")
+            section_label.setWordWrap(True)
+            self.grid.addWidget(section_label, row, 0, 1, 2)
+            row += 1
+            
+            # Count trades with options info
+            trades = results.get('trades', [])
+            options_trades = sum(1 for t in trades if t.get('options_info'))
+            
+            self.metric_labels['options_trades'] = self.create_metric_row(
+                "Options Positions:", 
+                f"{options_trades // 2 if options_trades > 0 else 0} spreads", 
+                row,
+                "#42A5F5"
+            )
+            row += 1
+            
+            # Calculate average premium paid/received
+            entry_trades = [t for t in trades if t.get('action') in ['BUY', 'BUY_LONG'] and t.get('options_info')]
+            if entry_trades:
+                avg_cost = sum(t.get('value', 0) for t in entry_trades) / len(entry_trades)
+                self.metric_labels['avg_spread_cost'] = self.create_metric_row(
+                    "Avg Spread Cost:", 
+                    f"₹{avg_cost:,.2f}", 
+                    row,
+                    "#42A5F5"
+                )
+                row += 1
+            
+            # Win rate for options specifically
+            exit_trades = [t for t in trades if t.get('action') in ['SELL', 'SELL_LONG'] and t.get('options_info')]
+            if exit_trades:
+                winning_options = sum(1 for t in exit_trades if t.get('pnl', 0) > 0)
+                options_win_rate = (winning_options / len(exit_trades)) * 100 if exit_trades else 0
+                wr_color = "#26A69A" if options_win_rate >= 50 else "#EF5350"
+                self.metric_labels['options_win_rate'] = self.create_metric_row(
+                    "Options Win Rate:", 
+                    f"{options_win_rate:.1f}%", 
+                    row,
+                    wr_color
+                )
+                row += 1

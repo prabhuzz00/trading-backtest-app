@@ -1,54 +1,83 @@
 """
-Stock Sidebar Widget - Left panel showing list of available stocks
+Stock Sidebar Widget - Left panel showing list of available stocks, futures, and options
 """
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QListWidget, QListWidgetItem, 
-    QLabel, QLineEdit, QHBoxLayout
+    QLabel, QLineEdit, QHBoxLayout, QPushButton, QButtonGroup
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor
 
 
 class StockListItem(QWidget):
-    """Custom widget for displaying stock information in list"""
-    def __init__(self, symbol, price, change_pct):
+    """Custom widget for displaying stock/instrument information in list"""
+    def __init__(self, symbol, price=None, change_pct=None, inst_type=None):
         super().__init__()
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 4, 8, 4)
         layout.setSpacing(2)
         
+        # Top row: Symbol and badge
+        top_layout = QHBoxLayout()
+        top_layout.setSpacing(6)
+        
         # Symbol
         symbol_label = QLabel(symbol)
         symbol_label.setStyleSheet("font-weight: bold; font-size: 13px; color: #D1D4DC;")
-        layout.addWidget(symbol_label)
+        top_layout.addWidget(symbol_label)
+        
+        # Instrument type badge
+        if inst_type:
+            badge_colors = {
+                'EQ': '#2962FF',    # Blue for stocks
+                'FUT': '#FF6D00',   # Orange for futures
+                'OPT': '#AB47BC'    # Purple for options
+            }
+            badge_color = badge_colors.get(inst_type, '#787B86')
+            badge = QLabel(inst_type)
+            badge.setStyleSheet(f"""
+                background-color: {badge_color};
+                color: white;
+                font-size: 9px;
+                font-weight: bold;
+                padding: 2px 6px;
+                border-radius: 3px;
+            """)
+            top_layout.addWidget(badge)
+        
+        top_layout.addStretch()
+        layout.addLayout(top_layout)
         
         # Price and change
-        price_layout = QHBoxLayout()
-        price_layout.setSpacing(8)
-        
-        price_label = QLabel(f"₹{price:,.2f}" if price else "")
-        price_label.setStyleSheet("font-size: 12px; color: #D1D4DC;")
-        price_layout.addWidget(price_label)
-        
-        if change_pct is not None:
-            color = "#26A69A" if change_pct >= 0 else "#EF5350"
-            sign = "+" if change_pct >= 0 else ""
-            change_label = QLabel(f"{sign}{change_pct:.2f}%")
-            change_label.setStyleSheet(f"font-size: 11px; color: {color}; font-weight: 500;")
-            price_layout.addWidget(change_label)
-        
-        price_layout.addStretch()
-        layout.addLayout(price_layout)
+        if price is not None or change_pct is not None:
+            price_layout = QHBoxLayout()
+            price_layout.setSpacing(8)
+            
+            if price:
+                price_label = QLabel(f"₹{price:,.2f}")
+                price_label.setStyleSheet("font-size: 12px; color: #D1D4DC;")
+                price_layout.addWidget(price_label)
+            
+            if change_pct is not None:
+                color = "#26A69A" if change_pct >= 0 else "#EF5350"
+                sign = "+" if change_pct >= 0 else ""
+                change_label = QLabel(f"{sign}{change_pct:.2f}%")
+                change_label.setStyleSheet(f"font-size: 11px; color: {color}; font-weight: 500;")
+                price_layout.addWidget(change_label)
+            
+            price_layout.addStretch()
+            layout.addLayout(price_layout)
 
 
 class StockSidebar(QWidget):
-    """Left sidebar showing available stocks for backtesting"""
-    stock_selected = pyqtSignal(str)  # Emits stock symbol when selected
+    """Left sidebar showing available instruments (stocks, futures, options) for backtesting"""
+    stock_selected = pyqtSignal(str)  # Emits symbol when selected
     
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.stocks_data = {}  # Store instrument data
+        self.current_filter = 'ALL'  # Current filter: ALL, EQ, FUT, OPT
         self.setup_ui()
-        self.stocks_data = {}  # Store stock data: {symbol: {'price': float, 'change': float}}
     
     def setup_ui(self):
         layout = QVBoxLayout(self)
@@ -64,6 +93,52 @@ class StockSidebar(QWidget):
         title = QLabel("INSTRUMENTS")
         title.setStyleSheet("font-size: 11px; font-weight: bold; color: #787B86;")
         header_layout.addWidget(title)
+        
+        # Filter buttons
+        filter_layout = QHBoxLayout()
+        filter_layout.setSpacing(4)
+        
+        self.filter_buttons = {}
+        self.filter_group = QButtonGroup()
+        
+        filters = [
+            ('ALL', 'All', '#787B86'),
+            ('EQ', 'Stocks', '#2962FF'),
+            ('FUT', 'Futures', '#FF6D00'),
+            ('OPT', 'Options', '#AB47BC')
+        ]
+        
+        for filter_id, label, color in filters:
+            btn = QPushButton(label)
+            btn.setCheckable(True)
+            btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: transparent;
+                    color: #787B86;
+                    border: 1px solid #2A2E39;
+                    padding: 4px 8px;
+                    border-radius: 3px;
+                    font-size: 10px;
+                    font-weight: bold;
+                }}
+                QPushButton:checked {{
+                    background-color: {color};
+                    color: white;
+                    border: 1px solid {color};
+                }}
+                QPushButton:hover {{
+                    background-color: #2A2E39;
+                }}
+            """)
+            btn.clicked.connect(lambda checked, fid=filter_id: self.set_filter(fid))
+            self.filter_buttons[filter_id] = btn
+            self.filter_group.addButton(btn)
+            filter_layout.addWidget(btn)
+        
+        # Set ALL as default
+        self.filter_buttons['ALL'].setChecked(True)
+        
+        header_layout.addLayout(filter_layout)
         
         # Search box
         self.search_box = QLineEdit()
@@ -108,9 +183,9 @@ class StockSidebar(QWidget):
     
     def set_stocks(self, stocks_list):
         """
-        Set the list of available stocks
+        Set the list of available instruments (stocks, futures, options)
         Args:
-            stocks_list: list of stock symbols or list of dicts with stock info
+            stocks_list: list of stock symbols or list of dicts with stock/instrument info
         """
         self.stock_list.clear()
         self.stocks_data = {}
@@ -120,14 +195,17 @@ class StockSidebar(QWidget):
                 symbol = stock.get('symbol', '')
                 price = stock.get('price', None)
                 change_pct = stock.get('change_pct', None)
+                inst_type = stock.get('type', None)
             else:
                 symbol = stock
                 price = None
                 change_pct = None
+                inst_type = None
             
             self.stocks_data[symbol] = {
                 'price': price,
-                'change': change_pct
+                'change': change_pct,
+                'type': inst_type
             }
             
             # Create list item
@@ -135,7 +213,7 @@ class StockSidebar(QWidget):
             item.setData(Qt.ItemDataRole.UserRole, symbol)
             
             # Create custom widget
-            widget = StockListItem(symbol, price, change_pct)
+            widget = StockListItem(symbol, price, change_pct, inst_type)
             item.setSizeHint(widget.sizeHint())
             
             self.stock_list.addItem(item)
@@ -143,8 +221,11 @@ class StockSidebar(QWidget):
         
         self.update_footer()
     
-    def filter_stocks(self, text):
-        """Filter stocks based on search text"""
+    def filter_stocks(self, text=None):
+        """Filter instruments based on search text and selected type filter"""
+        if text is None:
+            text = self.search_box.text()
+        
         search_text = text.lower()
         visible_count = 0
         
@@ -152,13 +233,28 @@ class StockSidebar(QWidget):
             item = self.stock_list.item(i)
             symbol = item.data(Qt.ItemDataRole.UserRole)
             
-            if search_text in symbol.lower():
+            # Check search text match
+            text_match = search_text in symbol.lower()
+            
+            # Check instrument type filter
+            inst_data = self.stocks_data.get(symbol, {})
+            inst_type = inst_data.get('type', '')
+            
+            type_match = (self.current_filter == 'ALL' or 
+                         self.current_filter == inst_type)
+            
+            if text_match and type_match:
                 item.setHidden(False)
                 visible_count += 1
             else:
                 item.setHidden(True)
         
         self.footer_label.setText(f"{visible_count} symbols")
+    
+    def set_filter(self, filter_type):
+        """Set the instrument type filter"""
+        self.current_filter = filter_type
+        self.filter_stocks()
     
     def update_footer(self):
         """Update footer with stock count"""

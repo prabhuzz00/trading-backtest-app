@@ -22,8 +22,8 @@ class ResultsWidget(QWidget):
         
         self.table.clear()
         
-        # Updated headers to include Type column
-        headers = ["Date", "Action", "Type", "Symbol", "Shares", "Price", "Value", "Brokerage", "P&L", "P&L %"]
+        # Updated headers to include Type column and Options Info
+        headers = ["Date", "Action", "Type", "Symbol", "Shares", "Price", "Value", "Brokerage", "P&L", "P&L %", "Options Info"]
         self.table.setColumnCount(len(headers))
         self.table.setHorizontalHeaderLabels(headers)
         self.table.setRowCount(len(trades))
@@ -139,6 +139,17 @@ class ResultsWidget(QWidget):
                 pnl_pct_item = QTableWidgetItem("-")
                 pnl_pct_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 self.table.setItem(i, 9, pnl_pct_item)
+            
+            # Options Info (if available)
+            options_info = t.get('options_info', '')
+            if options_info:
+                options_item = QTableWidgetItem(options_info)
+                options_item.setForeground(QColor(100, 150, 255))
+                self.table.setItem(i, 10, options_item)
+            else:
+                options_item = QTableWidgetItem("-")
+                options_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.table.setItem(i, 10, options_item)
         
         # Re-enable signals and updates
         self.table.blockSignals(False)

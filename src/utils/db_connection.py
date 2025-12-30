@@ -63,6 +63,119 @@ def get_available_stocks():
         print(f"Error fetching stock list: {e}")
         return []
 
+@lru_cache(maxsize=1)
+def get_available_futures():
+    """
+    Get list of all available futures instruments from MongoDB collections.
+    Futures collections start with 'NSEFO' and typically contain 'FUT' or end with future identifiers.
+    Cached to avoid repeated database queries.
+    
+    Returns:
+        List of futures symbols (collection names starting with 'NSEFO' and containing futures)
+    """
+    try:
+        client, db_name = get_mongo_client()
+        db = client[db_name]
+        
+        # Get all collection names starting with 'NSEFO'
+        collections = db.list_collection_names()
+        futures_symbols = [
+            col for col in collections 
+            if col.startswith('NSEFO') and ('FUT' in col.upper() or is_future_collection(col))
+        ]
+        
+        # Sort alphabetically
+        futures_symbols.sort()
+        
+        return futures_symbols
+        
+    except Exception as e:
+        print(f"Error fetching futures list: {e}")
+        return []
+
+@lru_cache(maxsize=1)
+def get_available_options():
+    """
+    Get list of all available options instruments from MongoDB collections.
+    Options collections start with 'NSEFO' and contain 'CE' (Call) or 'PE' (Put).
+    Cached to avoid repeated database queries.
+    
+    Returns:
+        List of options symbols (collection names starting with 'NSEFO' with CE/PE)
+    """
+    try:
+        client, db_name = get_mongo_client()
+        db = client[db_name]
+        
+        # Get all collection names starting with 'NSEFO' and containing CE or PE
+        collections = db.list_collection_names()
+        options_symbols = [
+            col for col in collections 
+            if col.startswith('NSEFO') and ('CE' in col.upper() or 'PE' in col.upper())
+        ]
+        
+        # Sort alphabetically
+        options_symbols.sort()
+        
+        return options_symbols
+        
+    except Exception as e:
+        print(f"Error fetching options list: {e}")
+        return []
+
+def is_future_collection(collection_name):
+    """
+    Helper function to determine if a collection is a futures instrument.
+    Futures typically don't have CE/PE and have expiry dates in the name.
+    
+    Args:
+        collection_name: Collection name to check
+    
+    Returns:
+        Boolean indicating if it's a futures collection
+    """
+    name_upper = collection_name.upper()
+    # If it has CE or PE, it's an option, not a future
+    if 'CE' in name_upper or 'PE' in name_upper:
+        return False
+    # Futures typically have month/date patterns
+    return True
+
+@lru_cache(maxsize=1)
+def get_all_instruments():
+    """
+    Get all available instruments (stocks, futures, and options) from MongoDB.
+    Returns a dict with categorized instruments.
+    Cached to avoid repeated database queries.
+    
+    Returns:
+        Dict with keys 'stocks', 'futures', 'options', 'all' containing lists of symbols
+    """
+    try:
+        stocks = get_available_stocks()
+        futures = get_available_futures()
+        options = get_available_options()
+        
+        # Combine all
+        all_instruments = stocks + futures + options
+        all_instruments.sort()
+        
+        return {
+            'stocks': stocks,
+            'futures': futures,
+            'options': options,
+            'all': all_instruments
+        }
+        
+    except Exception as e:
+        print(f"Error fetching all instruments: {e}")
+        return {
+            'stocks': [],
+            'futures': [],
+            'options': [],
+            'all': []
+        }
+
 def milliseconds_to_ist(milliseconds):
     """
     Convert milliseconds timestamp to IST datetime.

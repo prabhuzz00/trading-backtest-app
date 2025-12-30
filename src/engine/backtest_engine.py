@@ -61,7 +61,8 @@ class BacktestEngine:
         
         # **PERFORMANCE OPTIMIZATION**: Use a rolling window instead of full history
         # Most strategies only need recent data (e.g., 200 bars for MA, 14 for RSI)
-        lookback_window = 500  # Sufficient for most technical indicators
+        # INCREASED for options strategies that need more history for volatility calc
+        lookback_window = 1000  # Increased from 500 for options strategies
         
         # Use itertuples for faster iteration (5-10x faster than iterrows)
         for idx in range(n_rows):
@@ -82,13 +83,13 @@ class BacktestEngine:
             
             signal = strategy.generate_signal(row_dict, current_hist_data)
             if signal in ['BUY', 'BUY_LONG']:
-                self.execute_buy_long(portfolio, row_dict, stock_symbol)
+                self.execute_buy_long(portfolio, row_dict, stock_symbol, strategy)
             elif signal in ['SELL', 'SELL_LONG']:
-                self.execute_sell_long(portfolio, row_dict, stock_symbol)
+                self.execute_sell_long(portfolio, row_dict, stock_symbol, strategy)
             elif signal == 'SELL_SHORT':
-                self.execute_sell_short(portfolio, row_dict, stock_symbol)
+                self.execute_sell_short(portfolio, row_dict, stock_symbol, strategy)
             elif signal == 'BUY_SHORT':
-                self.execute_buy_short(portfolio, row_dict, stock_symbol)
+                self.execute_buy_short(portfolio, row_dict, stock_symbol, strategy)
 
             # Calculate equity for this bar
             equity = self.calculate_equity_fast(portfolio, closes[idx])
@@ -110,7 +111,8 @@ class BacktestEngine:
         if self.progress_callback:
             self.progress_callback(95, "Calculating metrics...")
         
-        # Calculate comprehensive metrics
+        # Calculate comprehensive metrics using ALL equity values for accurate max drawdown
+        # equity_values contains every bar, equity_curve is sampled for memory efficiency
         metrics = self.calculate_metrics_fast(portfolio, self.initial_cash, equity_values)
         
         # Clean up to free memory
@@ -126,22 +128,50 @@ class BacktestEngine:
             'price_data': data.reset_index(drop=True) if hasattr(data, 'reset_index') else data
         }
 
-    def execute_buy_long(self, portfolio, row, symbol):
+    def execute_buy_long(self, portfolio, row, symbol, strategy=None):
         """Open or add to a long position."""
         price = float(row.get('close', 0))
         if price <= 0:
             return
-        shares = int(portfolio['cash'] * 0.95 / price)
-        cost = shares * price
+        
+        # For options strategies with small premiums, ensure at least 1 position
+        # Check if this is an options strategy (has options_legs)
+        is_options = strategy and hasattr(strategy, 'options_legs') and strategy.options_legs
+        
+        if is_options:
+            # For options: use fixed position size of 1 lot, cost is the net debit
+            shares = 1  # 1 position/lot
+            # Use entry_price from strategy if available (net debit paid for spread)
+            if hasattr(strategy, 'entry_price') and strategy.entry_price is not None:
+                cost = abs(strategy.entry_price)  # Net debit for the spread
+            else:
+                cost = price * 0.01  # Fallback: 1% of underlying price as spread cost
+        else:
+            # For equity: calculate shares based on available cash and price
+            shares = int(portfolio['cash'] * 0.95 / price)
+            cost = shares * price
         
         # Calculate brokerage charges
         brokerage = cost * self.brokerage_rate
         total_cost = cost + brokerage
         
-        if shares > 0:
+        # Get options info from strategy if available
+        options_info = ""
+        if strategy and hasattr(strategy, 'options_legs') and strategy.options_legs:
+            legs_info = []
+            for leg in strategy.options_legs:
+                leg_str = f"{leg['strike']} {leg['type']} {leg['side']}"
+                legs_info.append(leg_str)
+            options_info = " | ".join(legs_info)
+        
+        if shares > 0 and total_cost <= portfolio['cash']:
             portfolio['cash'] -= total_cost
             portfolio['positions'][symbol] = portfolio['positions'].get(symbol, 0) + shares
-            portfolio['entry_prices'][symbol] = price  # Store entry price for P&L calculation
+            # For options, store the actual cost paid; for equity, store the price
+            if is_options:
+                portfolio['entry_prices'][symbol] = cost  # Store cost, not price
+            else:
+                portfolio['entry_prices'][symbol] = price  # Store price for equity
             portfolio['position_types'][symbol] = 'LONG'
             portfolio['trades'].append({
                 'date': row.get('date'),
@@ -155,16 +185,51 @@ class BacktestEngine:
                 'total_cost': total_cost,
                 'pnl': 0,
                 'pnl_pct': 0,
-                'quantity': shares
+                'quantity': shares,
+                'options_info': options_info
             })
 
-    def execute_sell_long(self, portfolio, row, symbol):
+    def execute_sell_long(self, portfolio, row, symbol, strategy=None):
         """Close a long position."""
         shares = portfolio['positions'].get(symbol, 0)
         if shares <= 0:
             return
         price = float(row.get('close', 0))
-        proceeds = shares * price
+        
+        # For options strategies, check if this is an options symbol
+        is_options_symbol = 'NSEFO' in symbol
+        
+        if is_options_symbol and strategy:
+            # Get entry cost (what we paid for the spread)
+            entry_cost = portfolio['entry_prices'].get(symbol, 0)
+            
+            # Get P&L from strategy's trade log (most recent trade)
+            if hasattr(strategy, 'trade_log') and strategy.trade_log:
+                last_trade = strategy.trade_log[-1]
+                
+                # The strategy calculates P&L before clearing legs
+                # So we can use it directly
+                pnl_from_strategy = last_trade.get('pnl', 0)
+                
+                # Calculate proceeds: entry_cost + pnl = exit_value
+                # Entry cost is positive (what we paid), pnl can be positive or negative
+                proceeds = abs(entry_cost) + pnl_from_strategy
+                
+                # Sanity check: proceeds should be between 0 and max_value
+                if hasattr(strategy, 'strike_spacing'):
+                    # Get lot size (default to 1 if not specified)
+                    lot_size = getattr(strategy, 'lot_size', 1)
+                    max_value = strategy.strike_spacing * lot_size  # Max value with lot size
+                    proceeds = max(0, min(proceeds, max_value))
+                else:
+                    # Ensure non-negative
+                    proceeds = max(0, proceeds)
+            else:
+                # Fallback if no trade log
+                proceeds = entry_cost * 0.5  # Assume 50% loss as conservative fallback
+        else:
+            # Standard equity calculation
+            proceeds = shares * price
         
         # Calculate brokerage charges
         brokerage = proceeds * self.brokerage_rate
@@ -174,13 +239,34 @@ class BacktestEngine:
         
         # Calculate P&L (including brokerage from both buy and sell)
         entry_price = portfolio['entry_prices'].get(symbol, price)
-        entry_value = entry_price * shares
+        
+        if is_options_symbol:
+            # For options, use the actual cost paid (entry_price stores the cost)
+            entry_value = entry_price
+        else:
+            # For equity
+            entry_value = entry_price * shares
+            
         entry_brokerage = entry_value * self.brokerage_rate
         total_brokerage = entry_brokerage + brokerage
         
         # Net P&L after all costs
         pnl = proceeds - entry_value - total_brokerage
         pnl_pct = (pnl / (entry_value + entry_brokerage) * 100) if entry_value > 0 else 0
+        
+        # Get options info from strategy if available
+        options_info = ""
+        if strategy and hasattr(strategy, 'options_legs') and hasattr(strategy, 'trade_log') and strategy.trade_log:
+            last_trade = strategy.trade_log[-1]
+            legs_info = []
+            for leg in last_trade.get('legs', []):
+                leg_str = f"{leg['strike']} {leg['type']} {leg['side']}"
+                legs_info.append(leg_str)
+            if legs_info:
+                options_info = " | ".join(legs_info)
+                exit_reason = last_trade.get('exit_reason', '')
+                if exit_reason:
+                    options_info += f" ({exit_reason})"
         
         portfolio['positions'][symbol] = 0
         portfolio['position_types'].pop(symbol, None)
@@ -197,10 +283,11 @@ class BacktestEngine:
             'net_proceeds': net_proceeds,
             'pnl': pnl,
             'pnl_pct': pnl_pct,
-            'quantity': shares
+            'quantity': shares,
+            'options_info': options_info
         })
     
-    def execute_sell_short(self, portfolio, row, symbol):
+    def execute_sell_short(self, portfolio, row, symbol, strategy=None):
         """Open a short position (sell first, buy later)."""
         price = float(row.get('close', 0))
         if price <= 0:
@@ -213,6 +300,15 @@ class BacktestEngine:
         # Calculate brokerage charges
         brokerage = proceeds * self.brokerage_rate
         net_proceeds = proceeds - brokerage
+        
+        # Get options info from strategy if available
+        options_info = ""
+        if strategy and hasattr(strategy, 'options_legs') and strategy.options_legs:
+            legs_info = []
+            for leg in strategy.options_legs:
+                leg_str = f"{leg['strike']} {leg['type']} {leg['side']}"
+                legs_info.append(leg_str)
+            options_info = " | ".join(legs_info)
         
         if shares > 0:
             portfolio['cash'] += net_proceeds  # Add proceeds from short sale
@@ -231,10 +327,11 @@ class BacktestEngine:
                 'net_proceeds': net_proceeds,
                 'pnl': 0,
                 'pnl_pct': 0,
-                'quantity': shares
+                'quantity': shares,
+                'options_info': options_info
             })
     
-    def execute_buy_short(self, portfolio, row, symbol):
+    def execute_buy_short(self, portfolio, row, symbol, strategy=None):
         """Close a short position (buy to cover)."""
         shares = abs(portfolio['positions'].get(symbol, 0))
         if shares <= 0 or portfolio['positions'].get(symbol, 0) >= 0:
@@ -259,6 +356,20 @@ class BacktestEngine:
         pnl = entry_value - cost - total_brokerage
         pnl_pct = (pnl / (entry_value + entry_brokerage) * 100) if entry_value > 0 else 0
         
+        # Get options info from strategy if available
+        options_info = ""
+        if strategy and hasattr(strategy, 'options_legs') and hasattr(strategy, 'trade_log') and strategy.trade_log:
+            last_trade = strategy.trade_log[-1]
+            legs_info = []
+            for leg in last_trade.get('legs', []):
+                leg_str = f"{leg['strike']} {leg['type']} {leg['side']}"
+                legs_info.append(leg_str)
+            if legs_info:
+                options_info = " | ".join(legs_info)
+                exit_reason = last_trade.get('exit_reason', '')
+                if exit_reason:
+                    options_info += f" ({exit_reason})"
+        
         portfolio['positions'][symbol] = 0
         portfolio['position_types'].pop(symbol, None)
         portfolio['trades'].append({
@@ -274,7 +385,8 @@ class BacktestEngine:
             'total_cost': total_cost,
             'pnl': pnl,
             'pnl_pct': pnl_pct,
-            'quantity': shares
+            'quantity': shares,
+            'options_info': options_info
         })
 
     def calculate_equity(self, portfolio, current_bar):
@@ -323,6 +435,7 @@ class BacktestEngine:
         equity_values = [point['equity'] for point in equity_curve]
         peak = equity_values[0]
         max_drawdown = 0
+        max_drawdown_peak = peak
         
         for value in equity_values:
             if value > peak:
@@ -330,8 +443,13 @@ class BacktestEngine:
             drawdown = peak - value
             if drawdown > max_drawdown:
                 max_drawdown = drawdown
+                max_drawdown_peak = peak  # Track peak at max drawdown
         
-        max_drawdown_pct = (max_drawdown / peak * 100) if peak > 0 else 0
+        # Calculate percentage and cap at 100%
+        if max_drawdown_peak > 0:
+            max_drawdown_pct = min((max_drawdown / max_drawdown_peak * 100), 100.0)
+        else:
+            max_drawdown_pct = 0
         
         # Win rate
         total_closed_trades = len(closing_trades)
@@ -421,12 +539,26 @@ class BacktestEngine:
         final_capital = equity_values[-1]
         total_return_pct = ((final_capital - initial_cash) / initial_cash * 100) if initial_cash > 0 else 0
         
-        # Vectorized drawdown calculation
+        # Vectorized drawdown calculation using all equity values
         equity_array = np.array(equity_values)
-        running_max = np.maximum.accumulate(equity_array)
-        drawdowns = running_max - equity_array
-        max_drawdown = drawdowns.max()
-        max_drawdown_pct = (max_drawdown / running_max[drawdowns.argmax()] * 100) if max_drawdown > 0 else 0
+        # Filter out any None, zero, or negative values
+        equity_array = equity_array[equity_array > 0]
+        
+        if len(equity_array) > 0:
+            running_max = np.maximum.accumulate(equity_array)
+            drawdowns = running_max - equity_array
+            max_drawdown = drawdowns.max()
+            max_dd_idx = drawdowns.argmax()
+            # Prevent division by zero and cap unrealistic values
+            if running_max[max_dd_idx] > 0:
+                max_drawdown_pct = (max_drawdown / running_max[max_dd_idx] * 100)
+                # Cap max drawdown percentage at 100% (can't lose more than everything)
+                max_drawdown_pct = min(max_drawdown_pct, 100.0)
+            else:
+                max_drawdown_pct = 0
+        else:
+            max_drawdown = 0
+            max_drawdown_pct = 0
         
         profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else (gross_profit if gross_profit > 0 else 0)
         

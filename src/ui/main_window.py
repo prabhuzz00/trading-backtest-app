@@ -193,21 +193,47 @@ class MainWindow(QMainWindow):
         self.toolbar.set_strategies(strategy_names)
     
     def load_stocks_from_db(self):
-        """Load available stocks from MongoDB database into sidebar."""
-        self.status_label.setText("Loading stocks from database...")
+        """Load all available instruments (stocks, futures, options) from MongoDB database into sidebar."""
+        self.status_label.setText("Loading instruments from database...")
         try:
-            stocks = get_available_stocks()
-            if stocks:
-                # Convert to list of dicts if needed (for future price/change display)
-                stock_list = [{'symbol': s} if isinstance(s, str) else s for s in stocks]
-                self.stock_sidebar.set_stocks(stock_list)
-                self.status_label.setText(f"Loaded {len(stocks)} stocks")
+            from utils.db_connection import get_all_instruments
+            
+            instruments = get_all_instruments()
+            all_symbols = instruments['all']
+            
+            if all_symbols:
+                # Convert to list of dicts with instrument type labels
+                instrument_list = []
+                for symbol in all_symbols:
+                    # Determine instrument type for display
+                    if symbol in instruments['stocks']:
+                        inst_type = 'EQ'
+                    elif symbol in instruments['futures']:
+                        inst_type = 'FUT'
+                    elif symbol in instruments['options']:
+                        inst_type = 'OPT'
+                    else:
+                        inst_type = ''
+                    
+                    instrument_list.append({
+                        'symbol': symbol,
+                        'type': inst_type
+                    })
+                
+                self.stock_sidebar.set_stocks(instrument_list)
+                
+                # Update status with counts
+                status_msg = f"Loaded {len(all_symbols)} instruments "
+                status_msg += f"({len(instruments['stocks'])} stocks, "
+                status_msg += f"{len(instruments['futures'])} futures, "
+                status_msg += f"{len(instruments['options'])} options)"
+                self.status_label.setText(status_msg)
             else:
-                self.status_label.setText("No stocks found in database")
-                QMessageBox.warning(self, "No Stocks", "No stock collections found in the database.")
+                self.status_label.setText("No instruments found in database")
+                QMessageBox.warning(self, "No Instruments", "No instrument collections found in the database.")
         except Exception as e:
-            self.status_label.setText(f"Error loading stocks: {str(e)}")
-            QMessageBox.critical(self, "Database Error", f"Failed to load stocks from database:\n{str(e)}")
+            self.status_label.setText(f"Error loading instruments: {str(e)}")
+            QMessageBox.critical(self, "Database Error", f"Failed to load instruments from database:\n{str(e)}")
     
     def on_stock_selected(self, symbol):
         """Handle stock selection from sidebar"""
@@ -279,8 +305,11 @@ class MainWindow(QMainWindow):
         self.status_label.setText("Processing results...")
         QApplication.processEvents()
         
-        # Display summary first (fastest)
-        self.summary_widget.display_summary(results)
+        # Get selected symbol to pass to summary (for options detection)
+        selected_stock = self.stock_sidebar.get_selected_stock()
+        
+        # Display summary first (fastest) - pass symbol for options detection
+        self.summary_widget.display_summary(results, selected_stock)
         
         # Switch to backtest chart tab to show results
         self.tabs.setCurrentIndex(1)  # Backtest Chart tab
