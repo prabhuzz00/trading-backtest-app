@@ -28,6 +28,10 @@ class BacktestEngine:
             self.progress_callback(15, "Loading strategy...")
         
         strategy = load_strategy(strategy_path)
+        
+        # Pass the underlying symbol to strategy if it supports it (for options strategies)
+        if hasattr(strategy, 'set_underlying_symbol'):
+            strategy.set_underlying_symbol(stock_symbol)
 
         portfolio = {
             'cash': self.initial_cash,
@@ -160,7 +164,8 @@ class BacktestEngine:
         if strategy and hasattr(strategy, 'options_legs') and strategy.options_legs:
             legs_info = []
             for leg in strategy.options_legs:
-                leg_str = f"{leg['strike']} {leg['type']} {leg['side']}"
+                premium = leg.get('entry_premium', 0) / 100.0  # Divide by 100 for display
+                leg_str = f"{leg['strike']} {leg['type']} {leg['side']} @₹{premium:.2f}"
                 legs_info.append(leg_str)
             options_info = " | ".join(legs_info)
         
@@ -260,7 +265,8 @@ class BacktestEngine:
             last_trade = strategy.trade_log[-1]
             legs_info = []
             for leg in last_trade.get('legs', []):
-                leg_str = f"{leg['strike']} {leg['type']} {leg['side']}"
+                premium = leg.get('entry_premium', 0) / 100.0  # Divide by 100 for display
+                leg_str = f"{leg['strike']} {leg['type']} {leg['side']} @₹{premium:.2f}"
                 legs_info.append(leg_str)
             if legs_info:
                 options_info = " | ".join(legs_info)
@@ -306,7 +312,8 @@ class BacktestEngine:
         if strategy and hasattr(strategy, 'options_legs') and strategy.options_legs:
             legs_info = []
             for leg in strategy.options_legs:
-                leg_str = f"{leg['strike']} {leg['type']} {leg['side']}"
+                premium = leg.get('entry_premium', 0) / 100.0  # Divide by 100 for display
+                leg_str = f"{leg['strike']} {leg['type']} {leg['side']} @₹{premium:.2f}"
                 legs_info.append(leg_str)
             options_info = " | ".join(legs_info)
         
@@ -362,7 +369,8 @@ class BacktestEngine:
             last_trade = strategy.trade_log[-1]
             legs_info = []
             for leg in last_trade.get('legs', []):
-                leg_str = f"{leg['strike']} {leg['type']} {leg['side']}"
+                premium = leg.get('entry_premium', 0) / 100.0  # Divide by 100 for display
+                leg_str = f"{leg['strike']} {leg['type']} {leg['side']} @₹{premium:.2f}"
                 legs_info.append(leg_str)
             if legs_info:
                 options_info = " | ".join(legs_info)

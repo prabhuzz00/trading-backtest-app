@@ -10,8 +10,14 @@ class ResultsWidget(QWidget):
         self.table.setAlternatingRowColors(True)
         layout.addWidget(self.table)
 
-    def display_results(self, results):
+    def display_results(self, results, symbol=None):
         trades = results.get("trades", [])
+        
+        # Check if this is an option symbol
+        is_option = False
+        if symbol:
+            symbol_upper = symbol.upper()
+            is_option = ('CE' in symbol_upper or 'PE' in symbol_upper) and 'NSEFO' in symbol_upper
         
         # Disable sorting and updates for faster rendering
         self.table.setSortingEnabled(False)
@@ -83,8 +89,10 @@ class ResultsWidget(QWidget):
             shares_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             self.table.setItem(i, 4, shares_item)
             
-            # Price
+            # Price (divide by 100 for options)
             price = t.get('price', 0)
+            if is_option:
+                price = price / 100.0
             price_item = QTableWidgetItem(f"₹{price:,.2f}")
             price_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             self.table.setItem(i, 5, price_item)

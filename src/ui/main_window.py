@@ -316,9 +316,9 @@ class MainWindow(QMainWindow):
         QApplication.processEvents()
         
         # Lazy load other widgets using QTimer to avoid blocking UI
-        QTimer.singleShot(100, lambda: self._load_results_delayed(results))
+        QTimer.singleShot(100, lambda: self._load_results_delayed(results, selected_stock))
     
-    def _load_results_delayed(self, results):
+    def _load_results_delayed(self, results, selected_stock):
         """Load heavy UI components with delays to keep UI responsive."""
         # Load OHLC chart first (primary view)
         self.status_label.setText("Rendering chart...")
@@ -327,7 +327,7 @@ class MainWindow(QMainWindow):
         price_data = results.get('price_data')
         trades = results.get('trades', [])
         if price_data is not None and not price_data.empty:
-            self.ohlc_chart_widget.plot_ohlc_with_trades(price_data, trades)
+            self.ohlc_chart_widget.plot_ohlc_with_trades(price_data, trades, selected_stock)
         
         # Load equity chart with delay
         QTimer.singleShot(50, lambda: self._load_equity_chart(results))
@@ -345,7 +345,8 @@ class MainWindow(QMainWindow):
         """Load trade results table."""
         self.status_label.setText("Loading trade results...")
         QApplication.processEvents()
-        self.results_widget.display_results(results)
+        selected_stock = self.stock_sidebar.get_selected_stock()
+        self.results_widget.display_results(results, selected_stock)
         
         # All done
         self._finalize_backtest_display(results)

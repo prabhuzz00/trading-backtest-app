@@ -20,6 +20,7 @@ class LightweightOHLCChart(QWidget):
         super().__init__()
         self.setup_ui()
         self.temp_html_file = None
+        self.current_symbol = None
         
     def setup_ui(self):
         layout = QVBoxLayout(self)
@@ -133,15 +134,18 @@ class LightweightOHLCChart(QWidget):
             self.status_label.setText("❌ Failed to load chart - Check if internet is available (CDN required)")
             print("✗ Chart load failed - The lightweight-charts library may not have loaded from CDN")
         
-    def plot_ohlc_with_trades(self, price_data, trades):
+    def plot_ohlc_with_trades(self, price_data, trades, symbol=None):
         """
         Plot OHLC chart with trade markers using lightweight-charts
         
         Args:
             price_data: DataFrame with columns ['date', 'open', 'high', 'low', 'close', 'volume']
             trades: list of dicts with trade information
+            symbol: The symbol being charted (for options detection)
         """
+        self.current_symbol = symbol
         print(f"\n=== Lightweight Chart: plot_ohlc_with_trades called ===")
+        print(f"Symbol: {symbol}")
         print(f"Price data type: {type(price_data)}")
         print(f"Price data shape: {price_data.shape if price_data is not None else 'None'}")
         print(f"Trades count: {len(trades) if trades else 0}")
@@ -198,14 +202,23 @@ class LightweightOHLCChart(QWidget):
                 print(f"First candle date: {self.price_data.iloc[0]['date']} -> timestamp: {timestamps[0]}")
                 print(f"Last candle date: {self.price_data.iloc[-1]['date']} -> timestamp: {timestamps[-1]}")
             
+            # Check if this is an option symbol (contains CE or PE)
+            is_option = False
+            if self.current_symbol:
+                symbol_upper = self.current_symbol.upper()
+                is_option = ('CE' in symbol_upper or 'PE' in symbol_upper) and 'NSEFO' in symbol_upper
+            
+            price_divisor = 100.0 if is_option else 1.0
+            print(f"Option detected: {is_option}, price divisor: {price_divisor}")
+            
             # Prepare chart data using list comprehension (faster than loop)
             chart_data = [
                 {
                     'time': int(timestamps[i]),
-                    'open': float(self.price_data.iloc[i]['open']),
-                    'high': float(self.price_data.iloc[i]['high']),
-                    'low': float(self.price_data.iloc[i]['low']),
-                    'close': float(self.price_data.iloc[i]['close'])
+                    'open': float(self.price_data.iloc[i]['open']) / price_divisor,
+                    'high': float(self.price_data.iloc[i]['high']) / price_divisor,
+                    'low': float(self.price_data.iloc[i]['low']) / price_divisor,
+                    'close': float(self.price_data.iloc[i]['close']) / price_divisor
                 }
                 for i in range(len(self.price_data))
             ]
@@ -248,6 +261,15 @@ class LightweightOHLCChart(QWidget):
         
         if self.show_trades_markers and self.trades:
             print(f"Processing {len(self.trades)} trade markers...")
+            
+            # Check if this is an option symbol for trade markers
+            is_option = False
+            if self.current_symbol:
+                symbol_upper = self.current_symbol.upper()
+                is_option = ('CE' in symbol_upper or 'PE' in symbol_upper) and 'NSEFO' in symbol_upper
+            
+            price_divisor = 100.0 if is_option else 1.0
+            
             for trade in self.trades:
                 try:
                     if 'date' not in trade:
@@ -255,7 +277,7 @@ class LightweightOHLCChart(QWidget):
                         
                     trade_date = pd.to_datetime(trade['date'])
                     timestamp = int(pd.Timestamp(trade_date).timestamp())
-                    price = float(trade.get('price', 0))
+                    price = float(trade.get('price', 0)) / price_divisor
                     action = trade.get('action', '')
                     
                     # Debug: Print first trade timestamp
@@ -568,6 +590,14 @@ class LightweightOHLCChart(QWidget):
         
         print(f"Updating trades list with {len(self.trades)} trades")
         
+        # Check if this is an option symbol
+        is_option = False
+        if self.current_symbol:
+            symbol_upper = self.current_symbol.upper()
+            is_option = ('CE' in symbol_upper or 'PE' in symbol_upper) and 'NSEFO' in symbol_upper
+        
+        price_divisor = 100.0 if is_option else 1.0
+        
         # Disable updates for faster rendering
         self.trades_table.setUpdatesEnabled(False)
         self.trades_table.setSortingEnabled(False)
@@ -621,8 +651,10 @@ class LightweightOHLCChart(QWidget):
             type_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.trades_table.setItem(i, 2, type_item)
             
-            # Price
+            # Price (divide by 100 for options)
             price = trade.get('price', 0)
+            if is_option:
+                price = price / price_divisor
             price_item = QTableWidgetItem(f"₹{price:,.2f}")
             price_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             self.trades_table.setItem(i, 3, price_item)

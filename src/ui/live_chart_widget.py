@@ -335,14 +335,24 @@ class LiveChartWidget(QWidget):
         aggregated_df = self.aggregate_timeframe(df, self.timeframe_combo.currentText())
         self.plot_chart(aggregated_df)
         
+        # Check if this is an option symbol for price display
+        is_option = False
+        if self.current_symbol:
+            symbol_upper = self.current_symbol.upper()
+            is_option = ('CE' in symbol_upper or 'PE' in symbol_upper) and 'NSEFO' in symbol_upper
+        
         # Update status
         start_date = aggregated_df['date'].min().strftime('%Y-%m-%d')
         end_date = aggregated_df['date'].max().strftime('%Y-%m-%d')
         timeframe = self.timeframe_combo.currentText()
+        latest_price = aggregated_df['close'].iloc[-1]
+        if is_option:
+            latest_price = latest_price / 100.0
+        
         self.status_label.setText(
             f"✓ Loaded {len(aggregated_df)} candles ({timeframe}) | "
             f"Period: {start_date} to {end_date} | "
-            f"Latest: ₹{aggregated_df['close'].iloc[-1]:,.2f}"
+            f"Latest: ₹{latest_price:,.2f}"
         )
     
     def aggregate_timeframe(self, df, timeframe):
@@ -393,13 +403,23 @@ class LiveChartWidget(QWidget):
             aggregated_df = self.aggregate_timeframe(self.current_data, timeframe)
             self.plot_chart(aggregated_df)
             
+            # Check if this is an option symbol for price display
+            is_option = False
+            if self.current_symbol:
+                symbol_upper = self.current_symbol.upper()
+                is_option = ('CE' in symbol_upper or 'PE' in symbol_upper) and 'NSEFO' in symbol_upper
+            
             # Update status
             start_date = aggregated_df['date'].min().strftime('%Y-%m-%d')
             end_date = aggregated_df['date'].max().strftime('%Y-%m-%d')
+            latest_price = aggregated_df['close'].iloc[-1]
+            if is_option:
+                latest_price = latest_price / 100.0
+            
             self.status_label.setText(
                 f"✓ {len(aggregated_df)} candles ({timeframe}) | "
                 f"Period: {start_date} to {end_date} | "
-                f"Latest: ₹{aggregated_df['close'].iloc[-1]:,.2f}"
+                f"Latest: ₹{latest_price:,.2f}"
             )
     
     def on_data_error(self, error_msg):
@@ -414,16 +434,25 @@ class LiveChartWidget(QWidget):
         if df.empty:
             return
         
+        # Check if this is an option symbol (contains CE or PE)
+        is_option = False
+        if self.current_symbol:
+            symbol_upper = self.current_symbol.upper()
+            is_option = ('CE' in symbol_upper or 'PE' in symbol_upper) and 'NSEFO' in symbol_upper
+        
         # Prepare data for JavaScript
         chart_data = []
         for _, row in df.iterrows():
+            # Divide option prices by 100
+            price_divisor = 100.0 if is_option else 1.0
+            
             chart_data.append({
                 'time': int(row['date'].timestamp()),
-                'open': float(row['open']),
-                'high': float(row['high']),
-                'low': float(row['low']),
-                'close': float(row['close']),
-                'value': float(row['close']),  # For line/area charts
+                'open': float(row['open']) / price_divisor,
+                'high': float(row['high']) / price_divisor,
+                'low': float(row['low']) / price_divisor,
+                'close': float(row['close']) / price_divisor,
+                'value': float(row['close']) / price_divisor,  # For line/area charts
             })
         
         # Prepare volume data

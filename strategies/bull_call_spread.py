@@ -31,7 +31,13 @@ Parameters:
 
 import pandas as pd
 import numpy as np
-from datetime import datetime
+from datetime import datetime, timedelta
+import sys
+import os
+
+# Add parent directory to path to import utils
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
+from utils.db_connection import get_stock_data
 
 class Strategy:
     """
@@ -50,8 +56,8 @@ class Strategy:
                  atr_period=14,
                  volatility_threshold=0.5,  # Lowered from 1.0 for more entries
                  strike_spacing=10000,  # 100 points in paise (100 * 100)
-                 profit_target_pct=0.50,
-                 stop_loss_pct=0.75,
+                 profit_target_pct=1.0,  # 100% profit target (1:3 risk:reward ratio)
+                 stop_loss_pct=0.33,  # 33% stop loss (1:3 risk:reward ratio)
                  strike_step=5000,  # 50 points in paise (50 * 100)
                  lot_size=75,
                  momentum_lookback=50,  # Use more bars for intraday (50 mins)
@@ -83,6 +89,10 @@ class Strategy:
         
         # Trade log for detailed reporting
         self.trade_log = []
+        
+        # Underlying symbol tracking (will be set by backtest engine)
+        self.underlying_symbol = None
+        self.option_expiry_date = None
         
     def calculate_atr(self, historical_data):
         """Calculate Average True Range"""
@@ -164,11 +174,157 @@ class Strategy:
         """Round price to nearest strike"""
         return int(round(price / self.strike_step) * self.strike_step)
     
-    def estimate_option_premium(self, spot, strike, atr, option_type, days_to_expiry):
+    def parse_futures_symbol(self, symbol):
         """
-        Estimate option premium based on ATR and moneyness
-        This is a simplified Black-Scholes approximation for simulation
+        Parse NIFTY futures symbol to extract expiry date
+        Example: NSEFO:NIFTY1 or NSEFO:#NIFTY20201231FUT
+        
+        Args:
+            symbol: Futures symbol string
+        
+        Returns:
+            datetime: Expiry date or None if not parsable
         """
+        try:
+            if not symbol or 'NIFTY' not in symbol.upper():
+                return None
+            
+            # Remove prefix if present
+            symbol_clean = symbol.replace('NSEFO:', '').replace('#', '')
+            
+            # Try to extract date in format YYYYMMDD
+            import re
+            date_match = re.search(r'(\d{8})', symbol_clean)
+            if date_match:
+                date_str = date_match.group(1)
+                expiry_date = datetime.strptime(date_str, '%Y%m%d')
+                return expiry_date
+            
+            # If no date found, return None (will use approximation)
+            return None
+            
+        except Exception as e:
+            return None
+    
+    def set_underlying_symbol(self, symbol):
+        """
+        Set the underlying symbol and extract expiry information
+        Called by backtest engine to pass the selected symbol
+        
+        Args:
+            symbol: The futures symbol being backtested (e.g., NSEFO:NIFTY1)
+        """
+        self.underlying_symbol = symbol
+        
+        # Try to parse expiry from symbol
+        parsed_expiry = self.parse_futures_symbol(symbol)
+        if parsed_expiry:
+            self.option_expiry_date = parsed_expiry
+        else:
+            # Default: use a common expiry (last Thursday of current month)
+            # This will be updated when building spreads
+            self.option_expiry_date = None
+    
+    def get_option_symbol(self, strike, option_type, expiry_date):
+        """
+        Construct option symbol name for MongoDB query
+        Format: NSEFO:#NIFTYYYYYMMDDCESTRIKE or NSEFO:#NIFTYYYYYMMDDPESTRIKE
+        Example: NSEFO:#NIFTY20201231CE2400000000
+        
+        Args:
+            strike: Strike price in paise (e.g., 2400000 for strike 24000)
+            option_type: 'CE' for Call or 'PE' for Put
+            expiry_date: Expiry date (datetime object)
+        
+        Returns:
+            str: Option symbol for database query
+        """
+        # Format expiry date as YYYYMMDD
+        expiry_str = expiry_date.strftime('%Y%m%d')
+        
+        # Strike should be in paise and properly formatted
+        strike_paise = int(strike)
+        
+        # Construct symbol: NSEFO:#NIFTYYYYYMMDDCE/PESTRIKE
+        # Based on your database format: NSEFO:#NIFTY20201231CE10000000
+        symbol = f"NSEFO:#NIFTY{expiry_str}{option_type}{strike_paise}"
+        
+        return symbol
+    
+    def fetch_option_premium(self, strike, option_type, current_date, expiry_date):
+        """
+        Fetch actual option premium from database
+        
+        Args:
+            strike: Strike price in paise
+            option_type: 'CE' or 'PE'
+            current_date: Current bar date
+            expiry_date: Option expiry date
+        
+        Returns:
+            float: Option close price (premium) or None if not found
+        """
+        try:
+            # Construct option symbol
+            symbol = self.get_option_symbol(strike, option_type, expiry_date)
+            
+            # Get current date as string for query
+            current_date_obj = pd.to_datetime(current_date)
+            date_str = current_date_obj.strftime('%Y-%m-%d')
+            
+            # Fetch option data for the current date
+            # Query a small window around current date to find closest match
+            start_date = (current_date_obj - timedelta(days=1)).strftime('%Y-%m-%d')
+            end_date = (current_date_obj + timedelta(days=1)).strftime('%Y-%m-%d')
+            
+            df = get_stock_data(symbol, start_date, end_date, use_cache=True)
+            
+            if df.empty:
+                return None
+            
+            # Find the closest date to current_date
+            df['date_diff'] = abs((df['date'] - current_date_obj).dt.total_seconds())
+            closest_idx = df['date_diff'].idxmin()
+            
+            # Get close price (premium)
+            premium = df.loc[closest_idx, 'close']
+            
+            return premium
+            
+        except Exception as e:
+            # If data fetch fails, return None to fall back to estimation
+            return None
+    
+    def estimate_option_premium(self, spot, strike, atr, option_type, days_to_expiry, current_date=None):
+        """
+        Get option premium - first try to fetch from database, fall back to estimation
+        
+        Args:
+            spot: Current spot price
+            strike: Strike price in paise
+            atr: Average True Range
+            option_type: 'CE' or 'PE'
+            days_to_expiry: Days until expiry
+            current_date: Current bar date (for fetching actual data)
+        
+        Returns:
+            float: Option premium
+        """
+        # Try to fetch real data from database if current_date is provided
+        if current_date is not None:
+            # Use the expiry date from the underlying symbol if available
+            # Otherwise, approximate as current_date + days_to_expiry
+            if self.option_expiry_date:
+                expiry_date = self.option_expiry_date
+            else:
+                expiry_date = pd.to_datetime(current_date) + timedelta(days=days_to_expiry)
+            
+            real_premium = self.fetch_option_premium(strike, option_type, current_date, expiry_date)
+            
+            if real_premium is not None and real_premium > 0:
+                return real_premium
+        
+        # Fall back to estimation if real data not available
         # Base premium from ATR (volatility proxy)
         base_premium = atr * np.sqrt(days_to_expiry / 5.0)
         
@@ -185,13 +341,19 @@ class Strategy:
         premium = intrinsic + time_value
         return max(premium, 1.0)  # Minimum premium
     
-    def build_bull_call_spread(self, spot, atr, days_to_expiry):
+    def build_bull_call_spread(self, spot, atr, days_to_expiry, current_date=None):
         """
         Build bull call spread position
         
         Structure:
         - BUY call at lower strike (ITM/ATM) - Pay premium
         - SELL call at higher strike (OTM) - Receive premium
+        
+        Args:
+            spot: Current spot price
+            atr: Average True Range
+            days_to_expiry: Days until expiry
+            current_date: Current bar date (for fetching real option data)
         
         Returns:
             legs: List of option legs with details
@@ -205,22 +367,22 @@ class Strategy:
         # Higher strike: OTM by specified spacing
         higher_strike = lower_strike + self.strike_spacing
         
-        # Estimate premiums
-        buy_call_premium = self.estimate_option_premium(spot, lower_strike, atr, 'CE', days_to_expiry)
-        sell_call_premium = self.estimate_option_premium(spot, higher_strike, atr, 'CE', days_to_expiry)
+        # Fetch real premiums from database (passing current_date)
+        buy_call_premium = self.estimate_option_premium(spot, lower_strike, atr, 'CE', days_to_expiry, current_date)
+        sell_call_premium = self.estimate_option_premium(spot, higher_strike, atr, 'CE', days_to_expiry, current_date)
         
         # Build legs (NIFTY lot size configurable)
         lot_size = self.lot_size
         legs = [
             {
-                'strike': lower_strike,
+                'strike': lower_strike / 100,  # Divide by 100 for display
                 'type': 'CE',
                 'side': 'BUY',
                 'entry_premium': buy_call_premium,
                 'quantity': lot_size
             },
             {
-                'strike': higher_strike,
+                'strike': higher_strike / 100,  # Divide by 100 for display
                 'type': 'CE',
                 'side': 'SELL',
                 'entry_premium': sell_call_premium,
@@ -233,12 +395,13 @@ class Strategy:
         net_debit = net_debit_per_lot * lot_size
         
         # Calculate max profit and max loss (per lot basis * lot_size)
-        max_profit = ((higher_strike - lower_strike) - net_debit_per_lot) * lot_size
+        # Strike difference already in paise, so divide by 100 for proper calculation
+        max_profit = (((higher_strike - lower_strike) / 100) - net_debit_per_lot) * lot_size
         max_loss = net_debit
         
         return legs, -net_debit, max_profit, max_loss  # Negative because we pay
     
-    def calculate_position_value(self, legs, current_spot, current_atr, days_remaining):
+    def calculate_position_value(self, legs, current_spot, current_atr, days_remaining, current_date=None):
         """
         Calculate current value of bull call spread
         
@@ -246,12 +409,21 @@ class Strategy:
         - Long call value increases as spot rises
         - Short call value also increases (liability)
         - Net value is the difference
+        
+        Args:
+            legs: List of option legs
+            current_spot: Current spot price
+            current_atr: Current ATR
+            days_remaining: Days remaining until expiry
+            current_date: Current bar date (for fetching real option data)
         """
         total_value = 0
         
         for leg in legs:
+            # Multiply strike back by 100 for premium calculation since estimate_option_premium expects paise
+            strike_for_calc = leg['strike'] * 100
             current_premium = self.estimate_option_premium(
-                current_spot, leg['strike'], current_atr, leg['type'], days_remaining
+                current_spot, strike_for_calc, current_atr, leg['type'], days_remaining, current_date
             )
             
             # Multiply by quantity (lot size)
@@ -294,7 +466,8 @@ class Strategy:
         info += f"{'-'*70}\n"
         
         for leg in self.options_legs:
-            info += f"{leg['strike']:<10} {leg['type']:<6} {leg['side']:<6} {leg['entry_premium']:<12.2f} {leg['quantity']:<6}\n"
+            strike_display = leg['strike']  # Already divided by 100
+            info += f"{strike_display:<10.0f} {leg['type']:<6} {leg['side']:<6} {leg['entry_premium']:<12.2f} {leg['quantity']:<6}\n"
         
         info += f"{'='*70}\n"
         return info
@@ -343,7 +516,7 @@ class Strategy:
                 # Build bull call spread
                 days_to_expiry = self.hold_days
                 legs, net_cost, max_prof, max_ls = self.build_bull_call_spread(
-                    current_price, current_atr, days_to_expiry
+                    current_price, current_atr, days_to_expiry, current_date
                 )
                 
                 # Minimum entry cost check (avoid spreads that are too cheap)
@@ -386,7 +559,7 @@ class Strategy:
             
             # Calculate current position value
             current_value = self.calculate_position_value(
-                self.options_legs, current_price, current_atr, days_remaining
+                self.options_legs, current_price, current_atr, days_remaining, current_date
             )
             
             # P&L calculation
