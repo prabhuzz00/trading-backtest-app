@@ -274,8 +274,19 @@ class LightweightOHLCChart(QWidget):
                 try:
                     if 'date' not in trade:
                         continue
+                    
+                    trade_date = trade['date']
+                    
+                    # Skip if date is None or NaT
+                    if trade_date is None or pd.isna(trade_date):
+                        continue
                         
-                    trade_date = pd.to_datetime(trade['date'])
+                    trade_date = pd.to_datetime(trade_date)
+                    
+                    # Double-check after conversion
+                    if pd.isna(trade_date):
+                        continue
+                        
                     timestamp = int(pd.Timestamp(trade_date).timestamp())
                     price = float(trade.get('price', 0)) / price_divisor
                     action = trade.get('action', '')

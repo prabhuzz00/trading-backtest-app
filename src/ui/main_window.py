@@ -13,6 +13,8 @@ from ui.stock_sidebar import StockSidebar
 from ui.top_toolbar import TopToolbar
 from ui.styles import DARK_THEME
 from utils.db_connection import get_available_stocks
+import yaml
+import os
 import os
 import yaml
 from datetime import datetime, timedelta
@@ -31,7 +33,17 @@ class BacktestWorker(QThread):
 
     def run(self):
         try:
-            engine = BacktestEngine()
+            # Load config to get initial_cash
+            config_path = os.path.join(os.path.dirname(__file__), '..', '..', 'config', 'config.yaml')
+            initial_cash = 100000  # Default
+            try:
+                with open(config_path, 'r') as f:
+                    config = yaml.safe_load(f)
+                    initial_cash = config.get('backtest', {}).get('initial_cash', 100000)
+            except:
+                pass  # Use default if config can't be read
+            
+            engine = BacktestEngine(initial_cash=initial_cash)
             results = engine.run_backtest(
                 self.strategy_path,
                 self.stock_symbol,

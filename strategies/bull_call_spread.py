@@ -295,12 +295,42 @@ class Strategy:
             # If data fetch fails, return None to fall back to estimation
             return None
     
+    def _estimate_premium_theoretical(self, spot, strike, atr, option_type, days_to_expiry):
+        """
+        Theoretical option premium estimation (used as fallback)
+        
+        Args:
+            spot: Current spot price in paise
+            strike: Strike price in paise
+            atr: Average True Range
+            option_type: 'CE' or 'PE'
+            days_to_expiry: Days until expiry
+        
+        Returns:
+            float: Estimated option premium in paise
+        """
+        # Base premium from ATR (volatility proxy)
+        base_premium = atr * np.sqrt(days_to_expiry / 5.0)
+        
+        # Intrinsic value
+        if option_type == 'CE':
+            intrinsic = max(0, spot - strike)
+        else:  # PE
+            intrinsic = max(0, strike - spot)
+        
+        # Time value based on moneyness
+        moneyness = abs(spot - strike) / spot if spot > 0 else 0
+        time_value = base_premium * np.exp(-moneyness * 2)
+        
+        premium = intrinsic + time_value
+        return max(premium, 1.0)  # Minimum premium
+    
     def estimate_option_premium(self, spot, strike, atr, option_type, days_to_expiry, current_date=None):
         """
         Get option premium - first try to fetch from database, fall back to estimation
         
         Args:
-            spot: Current spot price
+            spot: Current spot price in paise
             strike: Strike price in paise
             atr: Average True Range
             option_type: 'CE' or 'PE'
@@ -308,7 +338,7 @@ class Strategy:
             current_date: Current bar date (for fetching actual data)
         
         Returns:
-            float: Option premium
+            float: Option premium in paise
         """
         # Try to fetch real data from database if current_date is provided
         if current_date is not None:
@@ -324,22 +354,8 @@ class Strategy:
             if real_premium is not None and real_premium > 0:
                 return real_premium
         
-        # Fall back to estimation if real data not available
-        # Base premium from ATR (volatility proxy)
-        base_premium = atr * np.sqrt(days_to_expiry / 5.0)
-        
-        # Intrinsic value
-        if option_type == 'CE':
-            intrinsic = max(0, spot - strike)
-        else:  # PE
-            intrinsic = max(0, strike - spot)
-        
-        # Time value based on moneyness
-        moneyness = abs(spot - strike) / spot
-        time_value = base_premium * np.exp(-moneyness * 2)
-        
-        premium = intrinsic + time_value
-        return max(premium, 1.0)  # Minimum premium
+        # Fall back to theoretical estimation if real data not available
+        return self._estimate_premium_theoretical(spot, strike, atr, option_type, days_to_expiry)
     
     def build_bull_call_spread(self, spot, atr, days_to_expiry, current_date=None):
         """
@@ -371,18 +387,26 @@ class Strategy:
         buy_call_premium = self.estimate_option_premium(spot, lower_strike, atr, 'CE', days_to_expiry, current_date)
         sell_call_premium = self.estimate_option_premium(spot, higher_strike, atr, 'CE', days_to_expiry, current_date)
         
+        # CRITICAL VALIDATION: For a bull call spread, the lower strike MUST be more expensive
+        # If not, the pricing data is wrong or we have a bad setup
+        if buy_call_premium <= sell_call_premium:
+            # Fallback to estimation if database data is illogical
+            # Recalculate using estimation only (ignore fetched data)
+            buy_call_premium = self._estimate_premium_theoretical(spot, lower_strike, atr, 'CE', days_to_expiry)
+            sell_call_premium = self._estimate_premium_theoretical(spot, higher_strike, atr, 'CE', days_to_expiry)
+        
         # Build legs (NIFTY lot size configurable)
         lot_size = self.lot_size
         legs = [
             {
-                'strike': lower_strike / 100,  # Divide by 100 for display
+                'strike': lower_strike,  # Divide by 100 for display
                 'type': 'CE',
                 'side': 'BUY',
                 'entry_premium': buy_call_premium,
                 'quantity': lot_size
             },
             {
-                'strike': higher_strike / 100,  # Divide by 100 for display
+                'strike': higher_strike,  # Divide by 100 for display
                 'type': 'CE',
                 'side': 'SELL',
                 'entry_premium': sell_call_premium,
@@ -391,13 +415,37 @@ class Strategy:
         ]
         
         # Net debit = (Premium paid - Premium received) * lot_size
+        # For bull call spread: net_debit should always be POSITIVE (we pay money)
         net_debit_per_lot = buy_call_premium - sell_call_premium
+        
+        # Safety check: net debit must be positive for a debit spread
+        if net_debit_per_lot <= 0:
+            # This should never happen after validation above, but extra safety
+            return [], 0, 0, 0  # Return empty to skip this trade
+        
         net_debit = net_debit_per_lot * lot_size
         
-        # Calculate max profit and max loss (per lot basis * lot_size)
-        # Strike difference already in paise, so divide by 100 for proper calculation
-        max_profit = (((higher_strike - lower_strike) / 100) - net_debit_per_lot) * lot_size
-        max_loss = net_debit
+        # Calculate max profit and max loss using standard options formula
+        # All values in same units (paise):
+        # - strike_diff: in paise (e.g., 10000 paise = ₹100)
+        # - net_debit_per_lot: in paise (e.g., 300 paise = ₹3)
+        # - lot_size: number of contracts (e.g., 75)
+        # 
+        # Formula: Max Profit = (Strike Width - Net Debit) × Lot Size
+        # 
+        # Example (matching your theory):
+        # - Buy ₹23000 call for ₹5 (500 paise)
+        # - Sell ₹23100 call for ₹2 (200 paise)
+        # - Net debit per lot = 500 - 200 = 300 paise (₹3)
+        # - Strike difference = 10000 paise (₹100)
+        # - Lot size = 75
+        # - Max profit = (10000 - 300) × 75 = 727,500 paise = ₹7,275
+        # - Max loss = 300 × 75 = 22,500 paise = ₹225
+        #
+        # Converting to rupees: Max profit = (₹100 - ₹3) × 75 = ₹97 × 75 = ₹7,275 ✓
+        strike_diff = (higher_strike - lower_strike) / 100  # In rupees (e.g., 100 for 100 points)
+        max_profit = (strike_diff  - net_debit_per_lot) * lot_size  # In rupees
+        max_loss = net_debit * lot_size # In rupees
         
         return legs, -net_debit, max_profit, max_loss  # Negative because we pay
     
@@ -409,6 +457,7 @@ class Strategy:
         - Long call value increases as spot rises
         - Short call value also increases (liability)
         - Net value is the difference
+        - Value is capped between 0 and strike_difference * lot_size
         
         Args:
             legs: List of option legs
@@ -431,6 +480,11 @@ class Strategy:
                 total_value += current_premium * leg['quantity']
             else:  # SELL
                 total_value -= current_premium * leg['quantity']
+        
+        # Cap the value between 0 and maximum spread value
+        # Max value = strike_spacing * lot_size (in paise)
+        max_spread_value = self.strike_spacing * self.lot_size
+        total_value = max(0, min(total_value, max_spread_value))
         
         return total_value
     
@@ -567,6 +621,15 @@ class Strategy:
             # Current: Position is worth current_value
             # P&L = current_value - abs(entry_price)
             pnl = current_value - abs(self.entry_price)
+            
+            # Cap P&L at theoretical limits
+            # Max profit: self.max_profit (strike_diff - net_debit) * lot_size
+            # Max loss: self.max_loss (net_debit)
+            if self.max_profit > 0:
+                pnl = min(pnl, self.max_profit)
+            if self.max_loss > 0:
+                pnl = max(pnl, -self.max_loss)
+            
             pnl_pct = (pnl / abs(self.entry_price)) if abs(self.entry_price) > 0 else 0
             
             # Exit conditions

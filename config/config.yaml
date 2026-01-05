@@ -2,5 +2,5 @@ mongo:
   uri: "mongodb://localhost:27017"
   database: "mg"
 app:
-  initial_cash: 100000
+  initial_cash: 500000  # Increased for options strategies (₹5 lakhs)
   strategies_dir: "strategies"

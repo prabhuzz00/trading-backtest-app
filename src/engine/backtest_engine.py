@@ -115,6 +115,149 @@ class BacktestEngine:
         if self.progress_callback:
             self.progress_callback(95, "Calculating metrics...")
         
+        # For strategies that manage their own positions (like options spreads),
+        # copy trades from strategy.trade_log to portfolio trades
+        if hasattr(strategy, 'trade_log') and strategy.trade_log and len(portfolio['trades']) == 0:
+            # Strategy trade_log has separate ENTRY and EXIT records
+            # We need to pair them up by position_id
+            entry_trades = {}
+            
+            # Track cumulative P&L to update final capital
+            cumulative_pnl = 0
+            total_entries = 0
+            total_exits = 0
+            winning_exits = 0
+            
+            print(f"\n{'='*80}")
+            print(f"Converting {len(strategy.trade_log)} trade log entries to portfolio trades...")
+            
+            for trade in strategy.trade_log:
+                action = trade.get('action')
+                position_id = trade.get('position_id')
+                trade_date = trade.get('date')
+                
+                # Skip if no valid date
+                if trade_date is None or pd.isna(trade_date):
+                    continue
+                
+                if action == 'ENTRY':
+                    total_entries += 1
+                    # Store entry trade
+                    entry_trades[position_id] = trade
+                    
+                    # Format options legs info for entry
+                    legs_info = []
+                    call_strike = trade.get('call_strike', 0) / 100
+                    put_strike = trade.get('put_strike', 0) / 100
+                    call_premium = trade.get('call_premium', 0) / 100
+                    put_premium = trade.get('put_premium', 0) / 100
+                    legs_info.append(f"₹{call_strike:.0f} CE SELL @₹{call_premium:.2f}")
+                    legs_info.append(f"₹{put_strike:.0f} PE SELL @₹{put_premium:.2f}")
+                    options_info = " | ".join(legs_info)
+                    
+                    # Calculate value and brokerage for short sale (selling options)
+                    net_credit_paise = float(trade.get('net_credit', 0))  # Premium in paise
+                    lot_size = getattr(strategy, 'lot_size', 75)
+                    total_value = net_credit_paise * lot_size / 100  # Convert to rupees
+                    brokerage = total_value * self.brokerage_rate
+                    net_proceeds = total_value - brokerage
+                    
+                    # Update portfolio cash (credit received from selling)
+                    portfolio['cash'] += net_proceeds
+                    
+                    # Add entry trade to portfolio
+                    portfolio['trades'].append({
+                        'date': trade_date,
+                        'action': 'SELL_SHORT',
+                        'trade_type': 'SHORT',
+                        'symbol': stock_symbol,
+                        'shares': lot_size,
+                        'price': float(trade.get('spot', 0)) / 100,
+                        'value': total_value,
+                        'brokerage': brokerage,
+                        'net_proceeds': net_proceeds,
+                        'pnl': 0,
+                        'pnl_pct': 0,
+                        'quantity': lot_size,
+                        'options_info': options_info
+                    })
+                    
+                elif action == 'EXIT' and position_id in entry_trades:
+                    total_exits += 1
+                    # Get matching entry trade
+                    entry = entry_trades[position_id]
+                    
+                    # Format options legs info for exit
+                    legs_info = []
+                    for leg in trade.get('legs', []):
+                        premium = leg.get('entry_premium', 0) / 100.0
+                        leg_str = f"₹{leg['strike']:.0f} {leg['type']} {leg['side']} @₹{premium:.2f}"
+                        legs_info.append(leg_str)
+                    options_info = " | ".join(legs_info)
+                    exit_reason = trade.get('exit_reason', '')
+                    if exit_reason:
+                        options_info += f" ({exit_reason})"
+                    
+                    # Calculate value and brokerage for covering short (buying back options)
+                    closing_cost_paise = float(trade.get('closing_cost', 0))  # Cost in paise
+                    lot_size = getattr(strategy, 'lot_size', 75)
+                    total_cost = closing_cost_paise * lot_size / 100  # Convert to rupees
+                    brokerage = total_cost * self.brokerage_rate
+                    total_cost_with_brokerage = total_cost + brokerage
+                    
+                    # Get P&L from strategy (already in paise, convert to rupees)
+                    pnl_total_paise = float(trade.get('pnl_total', 0))
+                    pnl_total = pnl_total_paise / 100  # Convert to rupees
+                    
+                    if pnl_total > 0:
+                        winning_exits += 1
+                    
+                    # Debug first few trades
+                    if total_exits <= 3:
+                        print(f"Exit #{position_id}: pnl_total_paise={pnl_total_paise:.2f}, pnl_total={pnl_total:.2f}")
+                    
+                    # Update portfolio cash (deduct cost to buy back)
+                    portfolio['cash'] -= total_cost_with_brokerage
+                    
+                    # Track cumulative P&L
+                    cumulative_pnl += pnl_total
+                    
+                    # Calculate entry brokerage for total brokerage calculation
+                    entry_credit = float(entry.get('net_credit', 0)) * lot_size / 100
+                    entry_brokerage = entry_credit * self.brokerage_rate
+                    total_brokerage = entry_brokerage + brokerage
+                    
+                    # Add exit trade to portfolio
+                    portfolio['trades'].append({
+                        'date': trade_date,
+                        'action': 'BUY_SHORT',
+                        'trade_type': 'SHORT',
+                        'symbol': stock_symbol,
+                        'shares': lot_size,
+                        'price': float(trade.get('spot', 0)) / 100,
+                        'value': total_cost,
+                        'brokerage': brokerage,
+                        'net_proceeds': 0,
+                        'total_cost': total_cost_with_brokerage,
+                        'total_brokerage': total_brokerage,
+                        'pnl': pnl_total,
+                        'pnl_pct': float(trade.get('pnl_pct', 0)),
+                        'quantity': lot_size,
+                        'options_info': options_info
+                    })
+            
+            print(f"✓ Processed {total_entries} entries, {total_exits} exits")
+            print(f"✓ Winning exits: {winning_exits}/{total_exits}")
+            print(f"✓ Cumulative P&L: ₹{cumulative_pnl:,.2f}")
+            print(f"✓ Initial cash: ₹{self.initial_cash:,.2f}, Final cash: ₹{portfolio['cash']:,.2f}")
+            print(f"{'='*80}\n")
+            
+            # Update equity curve with final portfolio value
+            if portfolio['equity_curve']:
+                portfolio['equity_curve'][-1]['equity'] = portfolio['cash']
+                # Also update the equity_values array for accurate metrics
+                equity_values[-1] = portfolio['cash']
+        
         # Calculate comprehensive metrics using ALL equity values for accurate max drawdown
         # equity_values contains every bar, equity_curve is sampled for memory efficiency
         metrics = self.calculate_metrics_fast(portfolio, self.initial_cash, equity_values)
@@ -213,18 +356,19 @@ class BacktestEngine:
                 last_trade = strategy.trade_log[-1]
                 
                 # The strategy calculates P&L before clearing legs
-                # So we can use it directly
+                # So we can use it directly - it's already capped at max profit/loss
                 pnl_from_strategy = last_trade.get('pnl', 0)
                 
                 # Calculate proceeds: entry_cost + pnl = exit_value
                 # Entry cost is positive (what we paid), pnl can be positive or negative
                 proceeds = abs(entry_cost) + pnl_from_strategy
                 
-                # Sanity check: proceeds should be between 0 and max_value
+                # Final sanity check: proceeds should be between 0 and max_value
+                # This ensures numerical precision errors don't cause issues
                 if hasattr(strategy, 'strike_spacing'):
                     # Get lot size (default to 1 if not specified)
                     lot_size = getattr(strategy, 'lot_size', 1)
-                    max_value = strategy.strike_spacing * lot_size  # Max value with lot size
+                    max_value = strategy.strike_spacing * lot_size  # Max value with lot size (in paise)
                     proceeds = max(0, min(proceeds, max_value))
                 else:
                     # Ensure non-negative
