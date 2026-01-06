@@ -4,6 +4,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import QThread, pyqtSignal, QDate, QTimer, Qt
 from engine.backtest_engine import BacktestEngine
+from engine.options_backtest_engine import OptionsBacktestEngine
 from ui.backtest_results import ResultsWidget
 from ui.charts import ChartWidget
 from ui.summary_widget import SummaryWidget
@@ -43,7 +44,17 @@ class BacktestWorker(QThread):
             except:
                 pass  # Use default if config can't be read
             
-            engine = BacktestEngine(initial_cash=initial_cash)
+            # Detect if strategy is an options strategy
+            is_options_strategy = self._is_options_strategy(self.strategy_path)
+            
+            # Use appropriate engine
+            if is_options_strategy:
+                print(f"✓ Using Options Backtest Engine for {os.path.basename(self.strategy_path)}")
+                engine = OptionsBacktestEngine(initial_cash=initial_cash)
+            else:
+                print(f"✓ Using Standard Backtest Engine for {os.path.basename(self.strategy_path)}")
+                engine = BacktestEngine(initial_cash=initial_cash)
+            
             results = engine.run_backtest(
                 self.strategy_path,
                 self.stock_symbol,
@@ -54,6 +65,22 @@ class BacktestWorker(QThread):
             self.finished.emit(results)
         except Exception as e:
             self.error.emit(str(e))
+    
+    def _is_options_strategy(self, strategy_path):
+        """Detect if strategy is an options strategy by checking file content"""
+        try:
+            with open(strategy_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+                # Check for options-related keywords
+                options_keywords = [
+                    'option', 'call', 'put', 'strike', 'premium', 
+                    'spread', 'strangle', 'straddle', 'condor',
+                    'get_option_symbol', 'fetch_option_premium', 'options_legs'
+                ]
+                content_lower = content.lower()
+                return any(keyword in content_lower for keyword in options_keywords)
+        except:
+            return False
     
     def _emit_progress(self, percentage, message):
         """Emit progress signal from backtest engine."""
